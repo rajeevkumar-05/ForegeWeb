@@ -417,6 +417,8 @@ function buildGraph(project: Project, build: Build, specification: MasterSpecifi
 }
 
 export class BuildWorkflow {
+  /** When true, a build whose AI providers all fail is completed by the local generator. */
+  localCompletion = false;
   private checkpointGraphs=new Map<string,GraphifyStatus>();
   private running = new Set<string>();
   private readonly store: JsonStore;
@@ -714,6 +716,7 @@ export class BuildWorkflow {
         : "Generating a secure prompt-specific application with the deterministic local fallback.");
       let files: GeneratedFile[];
       if (this.generationProvider && specification.generator?.mode !== "deterministic") {
+       try {
         let repaired = false;
         try {
           files = await this.generationProvider.generate(specification, async (detail) => { await this.stage(buildId, "generating", detail); }, async accepted => {
@@ -763,6 +766,14 @@ export class BuildWorkflow {
             throw new ApiError(422, "REPEATED_LAYOUT", "The model repeated an existing layout after a redesign attempt. No template was substituted. Please retry generation.");
           }
         }
+       } catch (aiError) {
+        // Opt-in (FORGEWEB_LOCAL_COMPLETION=true): when every AI provider fails,
+        // finish the approved specification with ForgeWeb's own local generator.
+        if (!this.localCompletion || (aiError instanceof ApiError && aiError.code === "CHECKPOINT_STALE")) throw aiError;
+        const reason = aiError instanceof Error ? aiError.message.slice(0, 200) : "unknown provider error";
+        await this.stage(buildId, "generating", `AI providers could not finish (${reason}). Completing the approved specification with ForgeWeb's local generator.`);
+        files = generateDeterministicFiles(specification);
+       }
       } else {
         if (specification.generator?.mode === "ai" || specification.generator?.mode === "gemini") {
           throw new ApiError(503, "PROVIDER_UNAVAILABLE", "The approved AI provider is unavailable. Restore the API configuration before generating.");

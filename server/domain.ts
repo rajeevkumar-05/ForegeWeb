@@ -1,4 +1,4 @@
-export type BuildStatus =
+﻿export type BuildStatus =
   | "queued"
   | "specifying"
   | "planning"
@@ -72,7 +72,7 @@ export type MasterSpecification = {
   architecture: ArchitecturePlan;
   generator?: {
     mode: "ai" | "gemini" | "deterministic";
-    provider: "gemini-python" | "groq-openrouter" | "openrouter" | "groq" | "google-gemini" | "forgeweb-local" | "freellmapi" | "openai";
+    provider: "gemini-python" | "groq-openrouter" | "openrouter" | "groq" | "google-gemini" | "forgeweb-local" | "freellmapi" | "openai" | "ollama";
     model: string;
     message: string;
   };

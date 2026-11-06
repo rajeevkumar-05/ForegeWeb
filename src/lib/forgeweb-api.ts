@@ -1,4 +1,4 @@
-export type BuildStatus = "queued" | "specifying" | "planning" | "awaiting_confirmation" | "generating" | "reviewing" | "validating" | "completed" | "failed" | "needs_context";
+﻿export type BuildStatus = "queued" | "specifying" | "planning" | "awaiting_confirmation" | "generating" | "reviewing" | "validating" | "completed" | "failed" | "needs_context";
 
 export type BuildCapability = {
   id: string;

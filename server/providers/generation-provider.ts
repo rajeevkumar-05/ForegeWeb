@@ -71,7 +71,7 @@ function validFrontendCheckpoint(files:ProviderManifest['files'],specification:M
 type EncodedBackendBundle = { mainPy: string; routesPy: string; domainPy: string; contractsPy: string; servicePy: string; requirementIds: string[] };
 
 export interface ApplicationGenerationProvider {
-  readonly id: "gemini-python" | "groq-openrouter" | "openrouter" | "groq" | "google-gemini" | "freellmapi" | "openai";
+  readonly id: "gemini-python" | "groq-openrouter" | "openrouter" | "groq" | "google-gemini" | "freellmapi" | "openai" | "ollama";
   readonly mode: "ai" | "gemini";
   readonly model: string;
   plan(prompt: string, fallback: MasterSpecification): Promise<ProviderPlan>;
@@ -363,7 +363,7 @@ function decodeBackendBundle(encoded: EncodedBackendBundle): ProviderManifest {
   })) };
 }
 
-type CompatibleProviderId = "openrouter" | "groq" | "freellmapi" | "openai";
+type CompatibleProviderId = "openrouter" | "groq" | "freellmapi" | "openai" | "ollama";
 
 class OpenAiCompatibleGenerationProvider implements ApplicationGenerationProvider {
   edit(specification:MasterSpecification,request:EditRequest):Promise<EditPatch>{return this.request(editPrompt(specification,request),editSchema,'forgeweb_project_edit',4800);}
@@ -428,7 +428,8 @@ class OpenAiCompatibleGenerationProvider implements ApplicationGenerationProvide
       return {files:cached};
     }
     if (this.pacer || this.id === 'freellmapi') {
-      const manifest=await this.generateFiles(prompt, ["package.json", "frontend/src/styles.css", "frontend/src/components/ProductContent.tsx", "frontend/src/pages/ProductPage.tsx", "frontend/src/lib/api.ts", "frontend/src/App.tsx", "frontend/src/main.tsx", "INTERACTIONS.md", "frontend/preview.html"], onProgress, checkpoint);
+      // Staged prompt: one file per request, without the whole-application output instructions.
+      const manifest=await this.generateFiles(this.id === 'freellmapi' ? frontendImplementationPrompt(specification, true, true) : prompt, ["package.json", "frontend/src/styles.css", "frontend/src/components/ProductContent.tsx", "frontend/src/pages/ProductPage.tsx", "frontend/src/lib/api.ts", "frontend/src/App.tsx", "frontend/src/main.tsx", "INTERACTIONS.md", "frontend/preview.html"], onProgress, checkpoint);
       const issues=frontendSourceIssues(manifest.files);
       if(issues.length)throw new ApiError(422,'MODEL_FRONTEND_INTERACTIONS_INVALID',issues.join('; '));
       if(validFrontendCheckpoint(manifest.files,specification))await this.evidence?.cacheManifest(cacheKey,manifest.files).catch(()=>console.warn('Local frontend checkpoint could not be saved.'));
@@ -520,11 +521,21 @@ class OpenAiCompatibleGenerationProvider implements ApplicationGenerationProvide
         await onProgress?.(`Repairing Python syntax in ${path}; waiting for the next free-tier slot.`);
         manifest = await requestFile(`${filePrompt}\n\nSyntax validation failed: ${syntax.evidence}. Correct only this file. Return raw valid Python inside content, no markdown fences and no Base64. Previous rejected file: ${JSON.stringify(manifest.files[0])}`);
       }
-      files.push(manifest.files[0]);
       if (gateway && !path.endsWith('.py')) {
-        const issues = frontendSourceIssues([manifest.files[0]]);
+        let issues = frontendSourceIssues([manifest.files[0]]);
+        // Repair only this file (up to two attempts) instead of regenerating the whole frontend.
+        for (let repair = 0; issues.length && repair < 2; repair++) {
+          await onProgress?.(`Repairing ${path} only (${issues.join('; ').slice(0, 160)}). Completed files are kept.`);
+          await this.evidence?.record({event:'file_repair',provider:this.id,path,attempt:repair+1,issues}).catch(() => console.warn('Local generation evidence could not be saved.'));
+          const repaired = await requestFile(`${filePrompt}\n\nQUALITY GATE REJECTED THIS FILE: ${issues.join('; ')}. Return the complete corrected ${path}. Every button needs an onClick handler or type="submit" inside a form with onSubmit; every input/select/textarea needs a matching label (id + htmlFor); no href="#". Keep all existing behavior. Previous rejected file: ${JSON.stringify(manifest.files[0]).slice(0, 12_000)}`);
+          if (Array.isArray(repaired.files) && repaired.files.length === 1 && repaired.files[0].path === path && typeof repaired.files[0].content === 'string' && repaired.files[0].content.trim() && Array.isArray(repaired.files[0].requirementIds)) {
+            manifest = repaired;
+            issues = frontendSourceIssues([manifest.files[0]]);
+          }
+        }
         if (issues.length) throw new ApiError(422, 'MODEL_FRONTEND_INTERACTIONS_INVALID', issues.join('; '));
       }
+      files.push(manifest.files[0]);
       if (gateway || path.endsWith('.py')) await this.evidence?.cacheFile(cacheKey,manifest.files[0]).catch(() => console.warn('Local generation cache could not be saved.'));
       await checkpoint?.([...files]);
       await onProgress?.(`Received source ${files.length}/${paths.length}: ${path}. Validation is still pending.`);
@@ -551,12 +562,49 @@ class OpenAiCompatibleGenerationProvider implements ApplicationGenerationProvide
     }
   }
 
+  /**
+   * Ordered FreeLLMAPI models (FREELLMAPI_MODELS). Each request tries them in order and
+   * moves to the next model on rate limits, oversized prompts, missing keys, timeouts or
+   * unusable output, so one exhausted model never restarts the files already generated.
+   */
+  fallbackModels: string[] = [];
+
   private async request<T>(prompt: string, schema: object, schemaName: string, maxOutputTokens: number, responseMode: "json_schema" | "json_object" = "json_schema"): Promise<T> {
     if(this.id==='openai'){
       if(!this.sol)throw new ApiError(503,'OPENAI_NOT_CONFIGURED','Direct Sol connection is not configured.');
       const limit=schemaName==='forgeweb_react_frontend'?20000:schemaName==='forgeweb_architecture'?6000:Math.max(maxOutputTokens,6000);
       return this.sol.request<T>(FORGEWEB_MASTER_GENERATION_PROMPT,prompt,schema,schemaName,limit);
     }
+    const models = this.fallbackModels.length ? this.fallbackModels : [this.model];
+    if (models.length === 1) return this.requestOnce<T>(models[0], prompt, schema, schemaName, maxOutputTokens, responseMode);
+    const failures: string[] = [];
+    let repairable: ApiError | undefined;
+    let last: ApiError | undefined;
+    const now = Date.now();
+    const available = models.filter((model) => (modelCooldowns.get(model) ?? 0) <= now);
+    // If every model is cooling down, still try them once: cooldowns are estimates.
+    for (const model of available.length ? available : models) {
+      try {
+        const result = await this.requestOnce<T>(model, prompt, schema, schemaName, maxOutputTokens, responseMode);
+        if (models[0] !== model) moveModelToFront(this.fallbackModels, model);
+        return result;
+      } catch (error) {
+        if (!(error instanceof ApiError)) throw error;
+        last = error;
+        failures.push(`${model}: ${error.message.slice(0, 140)}`);
+        if (['MODEL_TRUNCATED', 'MODEL_INVALID_JSON'].includes(error.code)) repairable = error;
+        const retryAt = /"retryAtMs":(\d{13})/.exec(error.message)?.[1];
+        // Daily/minute quota exhausted: skip this model for later files until it resets.
+        if (/status 429/.test(error.message)) modelCooldowns.set(model, retryAt ? Number(retryAt) : Date.now() + 10 * 60_000);
+        else if (/status 503/.test(error.message) && /No candidate model|no key configured/i.test(error.message)) modelCooldowns.set(model, Date.now() + 60 * 60_000);
+      }
+    }
+    const summary = `All FreeLLMAPI models failed for ${schemaName}: ${failures.join(' | ')}`.slice(0, 1_800);
+    const chosen = repairable ?? last!;
+    throw new ApiError(chosen.status, chosen.code, summary);
+  }
+
+  private async requestOnce<T>(model: string, prompt: string, schema: object, schemaName: string, maxOutputTokens: number, responseMode: "json_schema" | "json_object" = "json_schema"): Promise<T> {
     // Conservative local estimate, not a tokenizer or a quota guarantee. Reject
     // pathological payloads before waiting or making a known oversized call.
     const estimatedInputTokens=Math.ceil(Buffer.byteLength(FORGEWEB_MASTER_GENERATION_PROMPT+prompt+JSON.stringify(schema),'utf8')/3);
@@ -569,7 +617,9 @@ class OpenAiCompatibleGenerationProvider implements ApplicationGenerationProvide
     const started = Date.now();
     const pacingWaitMs = started - queued;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 180_000);
+    // Local Ollama runs on CPU; allow up to Node fetch's 5-minute response-header limit.
+    const timeoutMs = this.id === "freellmapi" ? freeLlmApiTimeoutMs : this.id === "ollama" ? 290_000 : 180_000;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetchWithRetry(this.endpoint, {
         method: "POST",
@@ -581,14 +631,14 @@ class OpenAiCompatibleGenerationProvider implements ApplicationGenerationProvide
         },
         signal: controller.signal,
         body: JSON.stringify({
-          model: this.model,
+          model,
           messages: [
             { role: "system", content: FORGEWEB_MASTER_GENERATION_PROMPT },
             { role: "user", content: prompt },
           ],
           temperature: 0.28,
           max_tokens: maxOutputTokens,
-          ...(this.id === "groq" && /gpt-oss/i.test(this.model) ? { reasoning_effort: "low" } : {}),
+          ...((this.id === "groq" || this.id === "freellmapi") && /gpt-oss/i.test(model) ? { reasoning_effort: "low" } : {}),
           response_format: responseMode === "json_object"
             ? { type: "json_object" }
             : { type: "json_schema", json_schema: { name: schemaName, strict: true, schema } },
@@ -596,7 +646,7 @@ class OpenAiCompatibleGenerationProvider implements ApplicationGenerationProvide
       }, this.pacer ? 1 : 3);
       if (!response.ok) {
         const rawDetail = redactProviderDetail(await response.text(), this.apiKey).replace(/\s+/g, " ");
-        await this.evidence?.record({event:'provider_rejection',provider:this.id,model:this.model,schemaName,maxOutputTokens,httpStatus:response.status,pacingWaitMs,networkMs:Date.now()-started,response:rawDetail.slice(0,512_000)}).catch(() => console.warn('Local generation evidence could not be saved.'));
+        await this.evidence?.record({event:'provider_rejection',provider:this.id,model,schemaName,maxOutputTokens,httpStatus:response.status,pacingWaitMs,networkMs:Date.now()-started,response:rawDetail.slice(0,512_000)}).catch(() => console.warn('Local generation evidence could not be saved.'));
         const detail = rawDetail.includes('"failed_generation"')
           ? rawDetail.slice(0, rawDetail.indexOf('"failed_generation"')).slice(0, 240)
           : rawDetail.slice(0, 240);
@@ -604,7 +654,7 @@ class OpenAiCompatibleGenerationProvider implements ApplicationGenerationProvide
       }
       const payload = await response.json() as ChatCompletionResponse;
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new SyntaxError('Expected provider response object');
-      await this.evidence?.record({event:'provider_response',provider:this.id,model:this.model,schemaName,maxOutputTokens,finishReason:payload.choices?.[0]?.finish_reason,pacingWaitMs,networkMs:Date.now()-started,...(payload.choices?.[0]?.finish_reason==='length'?{rejectedOutput:payload.choices[0].message?.content?.slice(0,512_000)}:{})}).catch(() => console.warn('Local generation evidence could not be saved.'));
+      await this.evidence?.record({event:'provider_response',provider:this.id,model,schemaName,maxOutputTokens,finishReason:payload.choices?.[0]?.finish_reason,pacingWaitMs,networkMs:Date.now()-started,...(payload.choices?.[0]?.finish_reason==='length'?{rejectedOutput:payload.choices[0].message?.content?.slice(0,512_000)}:{})}).catch(() => console.warn('Local generation evidence could not be saved.'));
       if (payload.choices?.[0]?.finish_reason === "length") throw new ApiError(502, "MODEL_TRUNCATED", `${this.id} reached the ${schemaName} output limit (${maxOutputTokens} tokens). No incomplete source was accepted.`);
       const content = payload.choices?.[0]?.message?.content?.trim();
       if (!content) throw new ApiError(502, "MODEL_EMPTY_RESPONSE", `${this.id} returned no structured output.`);
@@ -613,12 +663,12 @@ class OpenAiCompatibleGenerationProvider implements ApplicationGenerationProvide
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new SyntaxError('Expected structured output object');
         return parsed as T;
       } catch {
-        await this.evidence?.record({event:'invalid_json',provider:this.id,model:this.model,schemaName,rejectedOutput:content.slice(0,512_000)}).catch(() => console.warn('Local generation evidence could not be saved.'));
+        await this.evidence?.record({event:'invalid_json',provider:this.id,model,schemaName,rejectedOutput:content.slice(0,512_000)}).catch(() => console.warn('Local generation evidence could not be saved.'));
         throw new ApiError(502, "MODEL_INVALID_JSON", `${this.id} returned invalid structured output.`);
       }
     } catch (error) {
       if (error instanceof ApiError) throw error;
-      if ((error as Error).name === "AbortError") throw new ApiError(504, "MODEL_TIMEOUT", `${this.id} generation exceeded the three-minute limit.`);
+      if ((error as Error).name === "AbortError") throw new ApiError(504, "MODEL_TIMEOUT", `${this.id} generation exceeded the ${timeoutMs === 180_000 ? "three-minute" : `${Math.round(timeoutMs / 1000)}-second`} limit.`);
       if (error instanceof SyntaxError) throw new ApiError(502, "MODEL_INVALID_JSON", `${this.id} returned an invalid JSON response envelope.`);
       throw new ApiError(502, "MODEL_UNAVAILABLE", `${this.id} could not be reached from the ForgeWeb server. ${networkFailureDetail(error)}`);
     } finally {
@@ -760,10 +810,13 @@ export class FrontendDualGeminiBackendProvider implements ApplicationGenerationP
   private readonly frontends: StageProvider[];
   private readonly geminis: StageProvider[];
   private readonly backends: StageProvider[];
-  constructor(frontends: StageProvider[], geminis: StageProvider[], backends = geminis) {
+  private readonly planners: StageProvider[];
+  /** `planners` defaults to `backends`; set it to plan with a different provider chain. */
+  constructor(frontends: StageProvider[], geminis: StageProvider[], backends = geminis, planners = backends) {
     this.frontends = frontends;
     this.geminis = geminis;
     this.backends = backends;
+    this.planners = planners;
     this.model = `Frontend: ${frontends.map((provider) => provider.model).join(" → ")}; backend: ${backends.map((provider) => provider.model).join(" → ")}`;
   }
 
@@ -782,7 +835,7 @@ export class FrontendDualGeminiBackendProvider implements ApplicationGenerationP
   }
 
   plan(prompt: string, fallback: MasterSpecification): Promise<ProviderPlan> {
-    return this.run("Architecture planning", this.backends, (provider) => provider.plan(prompt, fallback));
+    return this.run("Architecture planning", this.planners, (provider) => provider.plan(prompt, fallback));
   }
 
   generateBackendManifest(specification: MasterSpecification, onProgress?: (detail: string) => Promise<void>, checkpoint?: (files: ProviderManifest['files']) => Promise<void>): Promise<ProviderManifest> {
@@ -833,6 +886,15 @@ function providerErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "unknown provider error";
 }
 
+/** Per-request FreeLLMAPI limit, set from FREELLMAPI_TIMEOUT_MINUTES (default 3 minutes). */
+let freeLlmApiTimeoutMs = 180_000;
+/** Model id -> time (ms) before which it is skipped because its quota was exhausted. */
+const modelCooldowns = new Map<string, number>();
+function moveModelToFront(models: string[], model: string): void {
+  const index = models.indexOf(model);
+  if (index > 0) { models.splice(index, 1); models.unshift(model); }
+}
+
 export function createGenerationProviderFromEnv(environment: Record<string, string | undefined> = process.env, options: { groqPacer?: RequestPacer; evidence?: GenerationEvidence } = {}): ApplicationGenerationProvider | undefined {
   const requestedMode = environment.FORGEWEB_GENERATION_MODE?.toLowerCase() ?? "auto";
   if (requestedMode === "deterministic") return undefined;
@@ -845,6 +907,29 @@ export function createGenerationProviderFromEnv(environment: Record<string, stri
   const groqKey = environment.GROQ_API_KEY;
   const geminiKey = environment.GOOGLE_API_KEY ?? environment.GEMINI_API_KEY;
   const evidence = options.evidence ?? (environment.FORGEWEB_GENERATION_DIAGNOSTICS === 'true' ? new GenerationEvidence(environment.FORGEWEB_DATA_DIR ?? '.forgeweb-data',Object.entries(environment).filter(([name,value])=>/KEY|TOKEN|SECRET/.test(name)&&value).map(([,value])=>value!)) : undefined);
+  if (requestedMode === 'freellmapi-frontend-local-backend') {
+    // Planning + React frontend: FreeLLMAPI. Python backend: local Ollama (FreeLLMAPI as fallback).
+    // FREELLMAPI_MODELS is an ordered, comma-separated list; when a model is rate-limited,
+    // out of tokens, times out or returns invalid output, the next model is tried.
+    const modelList = [...new Set((environment.FREELLMAPI_MODELS ?? environment.FREELLMAPI_MODEL ?? 'auto').split(',').map((model) => model.trim()).filter((model) => /^[\w.:/-]{1,80}$/.test(model)))].slice(0, 40);
+    if (!modelList.length) throw new Error('FREELLMAPI_MODELS must list at least one FreeLLMAPI model id.');
+    // One provider, so files completed by one model are reused when the next model takes over.
+    const gateway = createGenerationProviderFromEnv({ ...environment, FORGEWEB_GENERATION_MODE: 'freellmapi', FREELLMAPI_MODEL: 'freellmapi-chain' }, options) as OpenAiCompatibleGenerationProvider;
+    gateway.fallbackModels = modelList;
+    const gateways = [gateway];
+    const ollamaModel = environment.OLLAMA_MODEL?.trim();
+    if (!ollamaModel || /cloud/i.test(ollamaModel)) throw new Error('OLLAMA_MODEL must name an installed local Ollama model.');
+    let ollamaBase: URL;
+    try { ollamaBase = new URL(environment.OLLAMA_BASE_URL ?? 'http://127.0.0.1:11434'); }
+    catch { throw new Error('OLLAMA_BASE_URL must be a loopback HTTP URL.'); }
+    if (!['http:', 'https:'].includes(ollamaBase.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(ollamaBase.hostname) || ollamaBase.username || ollamaBase.password || ollamaBase.search || ollamaBase.hash || !/^\/?$/.test(ollamaBase.pathname)) {
+      throw new Error('OLLAMA_BASE_URL must be a loopback HTTP URL without credentials, path, query or fragment.');
+    }
+    const ollama = new OpenAiCompatibleGenerationProvider('ollama', 'ollama', ollamaModel, `${ollamaBase.origin}/v1/chat/completions`, true, undefined, evidence);
+    // Backend: FreeLLMAPI first (seconds per file); local Ollama only if every cloud model fails.
+    const backends = environment.FORGEWEB_OLLAMA_BACKEND_FIRST === 'true' ? [ollama, ...gateways] : [...gateways, ollama];
+    return new FrontendDualGeminiBackendProvider(gateways, [], backends, gateways);
+  }
   if (requestedMode === 'freellmapi' || environment.FORGEWEB_FREELLMAPI_ENABLED === 'true') {
     const key = environment.FREELLMAPI_API_KEY?.trim();
     if (!key || key.startsWith('replace_')) throw new Error('FreeLLMAPI requires FREELLMAPI_API_KEY in the server-side .env.local file.');
@@ -855,6 +940,9 @@ export function createGenerationProviderFromEnv(environment: Record<string, stri
       throw new Error('FREELLMAPI_BASE_URL must be a loopback HTTP URL ending in /v1 without credentials, query or fragment.');
     }
     const model = environment.FREELLMAPI_MODEL?.trim() || 'auto';
+    const timeoutMinutes = Number(environment.FREELLMAPI_TIMEOUT_MINUTES);
+    // Capped below Node fetch's 5-minute response-header timeout (requests are not streamed).
+    freeLlmApiTimeoutMs = Number.isFinite(timeoutMinutes) && timeoutMinutes > 0 ? Math.min(timeoutMinutes * 60_000, 290_000) : 180_000;
     const gatewayEvidence = evidence ?? new GenerationEvidence(environment.FORGEWEB_DATA_DIR ?? '.forgeweb-data', [key]);
     return new OpenAiCompatibleGenerationProvider('freellmapi', key, model, `${base.origin}/v1/chat/completions`, false, undefined, gatewayEvidence);
   }
