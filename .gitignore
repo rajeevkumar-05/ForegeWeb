@@ -8,6 +8,12 @@ dist-server/
 playwright-report/
 test-results/
 ui-audit-*.png
+/forgeweb-preview-*.png
+!/forgeweb-preview-desktop.png
+/generated-*-preview.png
+!/generated-ecommerce-preview.png
+!/generated-project-preview.png
+/stitch-portfolio-design.html
 *.log
 .env
 .env.*

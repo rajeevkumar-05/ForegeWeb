@@ -6,7 +6,7 @@ The home page's Graph section shows an actual Graphify code-only snapshot of For
 
 Stop the dev server, run `npm run graph:refresh` after code changes to regenerate `public/forgeweb-code-graph.json`, then run `npm run dev` again. Stopping Vite first avoids Windows/OneDrive locks on the public snapshot; failed replacement preserves the previous graph. The command uses the installed local `graphify` CLI (reviewed 0.9.97). The generator reads an allowlisted source snapshot, excludes environment files, databases, dependencies, symlinks and Git history, invokes `--code-only`, and publishes only sanitized symbol/relationship metadata. It never invokes an LLM or cloud service. The downloaded original Graphify fork at `https://github.com/Sachin71000/graphify` matched reviewed revision `0a8cd4e1e342235fe53e881fb5d591bf0460071f`.
 
-This is a dated snapshot, not an always-on cloud graph or a proof that every line is correct. CSS does not produce Graphify symbols, display coordinates are generated locally, and inferred edges/confidence scores are not validation results. The public JSON includes source paths and symbol names but no source bodies, API keys or customer records. If hosting ForgeWeb publicly, those code metadata will be visible to visitors; disable/remove the showcase before publishing if those names are confidential. Generated customer-project graphs and their storage are separate and unchanged.
+This is a dated snapshot, not an always-on cloud graph or a proof that every line is correct. The published snapshot excludes the removed presentation scripts. CSS does not produce Graphify symbols, display coordinates are generated locally, and inferred edges/confidence scores are not validation results. The public JSON includes source paths and symbol names but no source bodies, API keys or customer records. If hosting ForgeWeb publicly, those code metadata will be visible to visitors; disable/remove the showcase before publishing if those names are confidential. Generated customer-project graphs and their storage are separate and unchanged.
 
 ForgeWeb is an architecture-first, full-stack application generator. A user describes a product, reviews the generated requirements and `ARCHITECTURE.md`, explicitly confirms the plan, and only then does ForgeWeb generate the customer's React frontend and typed backend.
 
@@ -270,9 +270,6 @@ Production identity, external model providers, isolated build workers, PostgreSQ
 - [Project workspace implementation plan](./docs/PROJECT_WORKSPACE_IMPLEMENTATION_PLAN.md)
 - [Architecture decisions and operating model](./docs/README.md)
 - [Third-party notices](./THIRD_PARTY_NOTICES.md)
-- [Latest research paper (PDF)](./research-paper/ForgeWeb_Updated_IEEE_References.pdf)
-- [Research paper LaTeX and reference notes](./research-paper/README-Supplied-References.md)
-- [Phase 2 review presentation](./ForgeWeb_Phase_2_Review_Completed.pptx)
 
 ## Security note
 
