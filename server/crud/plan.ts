@@ -3,7 +3,7 @@ import type { MasterSpecification } from '../domain.ts';
 
 export type CrudField = { key: string; label: string; type: 'text' | 'number' | 'integer' | 'email' | 'date'; required: boolean; unique: boolean; min?: number; max?: number };
 export type CrudResource = { key: string; label: string; fields: CrudField[] };
-export type CrudPlan = { title: string; resources: CrudResource[] };
+export type CrudPlan = { title: string; resources: CrudResource[]; site?: 'restaurant' | 'portfolio' };
 
 const hint = 'Example: Build a library CRUD website. Books: title, ISBN (unique), price (number, min 0); Members: name, email.';
 function clarify(message: string): never { throw new ApiError(422, 'CRUD_PROMPT_NEEDS_DETAIL', message + ' ' + hint); }
@@ -67,6 +67,15 @@ function collectionFrom(raw: string): string {
   const forName = /\bfor\s+(.+)$/i.exec(title);
   return (forName?.[1] ?? title).replace(/^(?:a |an |the )/i, '').replace(/\b(?:crud|management|system|website|web app|application|app|manager|tracker|register|directory|database|catalog|records?)\b/gi, '').trim();
 }
+export function parseBasicSite(prompt: string): CrudPlan | undefined {
+  const m = /^(?:build|create|generate|make) (?:a |an )?(?:basic |simple )?(restaurant|portfolio) (?:website|site)(?: (?:called|named) ([a-z0-9][a-z0-9 '-]{0,60}?))?(?: with (?:an? )?(?:editable |public )?(menu|project gallery))?[.!]?$/i.exec(prompt.trim());
+  if (!m) return;
+  const site = m[1].toLowerCase() as 'restaurant' | 'portfolio';
+  const restaurant = site === 'restaurant';
+  if (m[3] && m[3].toLowerCase() !== (restaurant ? 'menu' : 'project gallery')) return;
+  return { site, title: m[2] || (restaurant ? 'Restaurant' : 'Portfolio'), resources: [restaurant ? resource('Menu items','name, description, price (number, min 0)') : resource('Projects','title, description, category')] };
+}
+
 export function parseCrudPrompt(prompt: string): CrudPlan | undefined {
   const declaresFields = /\b(?:fields?|columns?)\s*[:=]|\bwith\b[^.!;\n]*(?:,|\band\b)/i.test(prompt);
   const intent = /\bcrud\b|\bmanagement system\b|\b(?:create|add)\b[^.!]*(?:\bedit\b|\bupdate\b)[^.!]*\b(?:delete|remove)\b/i.test(prompt)

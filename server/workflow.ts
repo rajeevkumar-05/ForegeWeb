@@ -20,7 +20,7 @@ import type {
 import {GENERATED_VITE_VERSION,GENERATED_REACT_PLUGIN_VERSION} from './generation/frontend-toolchain.ts';
 import { ApiError, assertPrompt, delay, digest, id, now, safePath, slugify } from "./lib.ts";
 import { buildGeneratedFrontend, hasGeneratedFrontendMarker } from "./generated-frontend.ts";
-import { applyCrudPlan, parseCrudPrompt } from './crud/plan.ts';
+import { applyCrudPlan, parseBasicSite, parseCrudPrompt } from './crud/plan.ts';
 import { crudFiles, verifyCrudFiles } from './crud/application.ts';
 import { detectProductKind, inferDomainEntities, inferProductName } from "./product-intent.ts";
 import { AGENT_POLICY, createTasks, enforceImplementationTask } from "./policy.ts";
@@ -562,10 +562,15 @@ export class BuildWorkflow {
           .map((description) => description.slice(0, 1_000)),
       };
       let specification = fallbackSpecification;
-      const crud = parseCrudPrompt(sourcePrompt);
+      const crud = (!this.generationProvider && !this.legacyTemplates ? parseBasicSite(sourcePrompt) : undefined) ?? parseCrudPrompt(sourcePrompt);
       if (crud) {
         if (references?.length) throw new ApiError(422, 'CRUD_REFERENCE_UNSUPPORTED', 'The local CRUD builder takes collection definitions in the prompt. Remove external references to continue.');
         specification = applyCrudPlan(fallbackSpecification, crud);
+        if (crud.site) {
+          specification.generator!.model = 'forgeweb-site-v1';
+          specification.summary = 'Public ' + crud.site + ' website with editable content stored in SQLite.';
+          specification.requirements[0].acceptanceCriteria.push('Saved changes appear on the public page.');
+        }
       } else if (this.generationProvider) {
         const providerPlan = await this.generationProvider.plan(sourcePrompt, fallbackSpecification);
         specification = applyProviderPlan(fallbackSpecification, providerPlan, this.generationProvider);
@@ -616,7 +621,7 @@ export class BuildWorkflow {
 
   async importStitchDesignZip(buildId: string, buffer: Buffer): Promise<BuildView> {
     const current = this.get(buildId);
-    if(current.specification?.crud) throw new ApiError(422, 'CRUD_DESIGN_UNSUPPORTED', 'The local CRUD builder uses its built-in record forms.');
+    if(current.specification?.crud && !current.specification.crud.site) throw new ApiError(422, 'CRUD_DESIGN_UNSUPPORTED', 'The local CRUD builder uses its built-in record forms.');
     if (current.status !== "awaiting_confirmation" || !current.specification) throw new ApiError(409, "INVALID_BUILD_STATE", "Import a Stitch ZIP while this build is waiting for confirmation.");
     const design = await importStitchZip(buffer);
     await this.store.mutate((state) => {
@@ -708,7 +713,7 @@ export class BuildWorkflow {
         throw new ApiError(409, "SPECIFICATION_NOT_CONFIRMED", "Frontend and backend generation requires an approved specification.");
       }
       const database = this.store.read();
-      if (this.stitchDesigner && !specification.crud && !specification.stitchDesign) {
+      if (this.stitchDesigner && (!specification.crud || specification.crud.site) && !specification.stitchDesign) {
         await this.stage(buildId, "generating", "Designing the approved product in Google Stitch before source generation.");
         const design = await this.stitchDesigner.design(specification, async (checkpoint) => {
           await this.store.mutate((state) => { state.specifications[specification!.id].stitchRequest = checkpoint; });
@@ -824,6 +829,8 @@ export class BuildWorkflow {
 
       const current = this.get(buildId);
       const graph = buildGraph(current.project, current, specification, tasks, files, checks);
+      const versionId = id("version");
+      await this.workspace.graphify.ensure(current.project.id, versionId, files).catch(() => {});
       await this.store.mutate((database) => {
         database.graphs[graph.id] = graph;
         const build = database.builds[buildId];
@@ -835,7 +842,6 @@ export class BuildWorkflow {
         build.updatedAt = now();
         build.stages.push({ index: stageIndexes.completed, key: "completed", label: "Graph synchronized", detail: build.stageDetail, startedAt: now(), completedAt: now() });
         const project = database.projects[build.projectId];
-        const versionId = id("version");
         database.versions[versionId] = {
           id: versionId,
           projectId: project.id,
@@ -858,19 +864,16 @@ export class BuildWorkflow {
         project.updatedAt = now();
         this.pushEvent(database.events[buildId], buildId, "build.completed", build.stageDetail, { graphNodes: graph.nodes.length, checks: checks.length });
       });
-      // Index every validated generated version; graph failure must not fail the website.
-      const saved=this.workspace.get(current.project.id);
-      if(saved.currentVersion)await this.workspace.graphify.ensure(saved.project.id,saved.currentVersion.id,saved.files);
     } catch (error) {
       await this.fail(buildId, error);
     } finally {
-      const partial=this.store.read().files[buildId];
-      if(partial?.length&&this.get(buildId).status==='failed'){void this.workspace.graphify.ensure(this.get(buildId).projectId,`checkpoint-${buildId}`,partial).catch(()=>{});}
       this.running.delete(runKey);
     }
   }
 
   private async fail(buildId: string, error: unknown): Promise<void> {
+    const partial = this.store.read().files[buildId];
+    if (partial?.length) await this.workspace.graphify.ensure(this.get(buildId).projectId, `checkpoint-${buildId}`, partial).catch(() => {});
     const code = error instanceof ApiError ? error.code : "BUILD_FAILED";
     const message = error instanceof Error ? error.message : "Build failed unexpectedly.";
     await this.store.mutate((database) => {

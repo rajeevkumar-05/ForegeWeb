@@ -21,9 +21,15 @@ export function crudFiles(spec: MasterSpecification): GeneratedFile[] {
   const plan = spec.crud!;
   const requirements = spec.requirements.map(r => r.id);
   const preview = '<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + escape(plan.title) + '</title><main style="font:16px system-ui;padding:3%;color:#184e50"><header><h1>' + escape(plan.title) + '</h1></header><p>Start live preview to manage saved records.</p>' + spec.requirements.map(r => '<section><h2>' + escape(r.title) + '</h2><p>' + escape(r.description) + '</p></section>').join('') + '</main></html>';
+  let html = asset('index.html'), script = asset('app.js');
+  if (plan.site) {
+    const screen = spec.stitchDesign ? '<template id="design-source">' + escape(spec.stitchDesign.html) + '</template>' : '';
+    html = html.replace('<main>', '<main id="manager" hidden><a href="/">View public page</a>').replace('</main>', '</main><main id="public" hidden><header><h1>' + escape(plan.title) + '</h1></header>' + screen + '<section id="design"></section><h2>' + (plan.site === 'restaurant' ? 'Menu' : 'Projects') + '</h2><div id="cards"></div><p id="public-status" role="status"></p><a href="/?manage">Manage content</a></main>').replace('</style>', '#cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(16rem,100%),1fr));gap:1rem}#cards article{background:white;padding:1.5rem;border-top:3px solid #254747}#public h1{font-family:Georgia,serif}</style>');
+    script += '\n' + asset('public.js');
+  }
   const contents: Record<string, string> = {
     'shared/crud.json': JSON.stringify(plan, null, 2), 'frontend/preview.html': preview,
-    'frontend/index.html': asset('index.html'), 'frontend/app.js': asset('app.js'), 'backend/engine.mjs': asset('engine.mjs'),
+    'frontend/index.html': html, 'frontend/app.js': script, 'backend/engine.mjs': asset('engine.mjs'),
     'backend/application.mjs': launcher, 'tests/verify.mjs': asset('verify.mjs').replace("from './engine.mjs'", "from '../backend/engine.mjs'"),
     'backend/start.mjs': "import { open } from './application.mjs';\nimport { startServer } from './engine.mjs';\nconst session = open(process.env.APP_DATABASE_PATH || 'application.sqlite');\nconsole.log(await startServer(session.server, Number(process.env.PORT || 3000)));\n",
     'tests/application.test.mjs': "import test from 'node:test';\nimport { open, plan } from '../backend/application.mjs';\nimport { verifyCrud } from './verify.mjs';\ntest('Approved CRUD workflows', () => verifyCrud(plan, open));\n",
@@ -39,16 +45,16 @@ export function crudSourceCheck(spec: MasterSpecification, files: GeneratedFile[
   const valid = files.length === expected.length && expected.every(f => byPath.get(f.path) === f.content);
   return { id: id('check'), name: 'Approved CRUD source', status: valid ? 'passed' : 'failed', evidence: valid ? 'Exported schema, frontend, server and acceptance suite match the approved CRUD implementation.' : 'Source differs from the approved CRUD implementation. Regenerate before running or exporting.' };
 }
-export function openCrud(plan: CrudPlan, path: string) {
+export function openCrud(plan: CrudPlan, path: string, files?: GeneratedFile[]) {
   const db = openRecords(path);
-  return { db, server: createCrudServer(plan, db, asset('index.html'), asset('app.js')) };
+  return { db, server: createCrudServer(plan, db, files?.find(f => f.path === 'frontend/index.html')?.content ?? asset('index.html'), files?.find(f => f.path === 'frontend/app.js')?.content ?? asset('app.js')) };
 }
 export async function verifyCrudFiles(spec: MasterSpecification, files: GeneratedFile[]): Promise<ValidationCheck[]> {
   const source = crudSourceCheck(spec, files);
   if (source.status === 'failed') return [source];
   const check: ValidationCheck = { id: id('check'), name: 'CRUD HTTP and SQLite acceptance', status: 'failed', evidence: '' };
   try {
-    const count = await verifyCrud(spec.crud!, path => openCrud(spec.crud!, path));
+    const count = await verifyCrud(spec.crud!, path => openCrud(spec.crud!, path, files));
     check.status = 'passed'; check.evidence = count + ' HTTP assertions passed, including field validation, search, update, deletion and database reopen.';
   } catch (error) { check.evidence = error instanceof Error ? error.message : 'CRUD acceptance failed.'; }
   return [source, check];

@@ -177,7 +177,7 @@ export class ProjectRuntime {
         await this.stopCrud(projectId);
         const path = this.crudDatabase(projectId);
         await mkdir(dirname(path), {recursive:true});
-        const app = openCrud(workspace.specification.crud, path);
+        const app = openCrud(workspace.specification.crud, path, workspace.files);
         try {
           const url = await startServer(app.server);
           const [ui, health] = await Promise.all([fetch(url), fetch(url + '/health')]);
