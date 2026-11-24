@@ -51,6 +51,7 @@ export type ArchitecturePlan = {
 };
 
 export type MasterSpecification = {
+  crud?: import('./crud/plan.ts').CrudPlan;
   id: string;
   projectId: string;
   version: number;
@@ -254,7 +255,7 @@ export type BuildView = Build & {
 };
 
 export type ProjectWorkspace = {
-  editingMode?:'ai'|'local-style';
+  editingMode?:'ai'|'local-style'|'crud';
   graphify?: import('./project-graphify.ts').GraphifyStatus;
   project: Project;
   specification?: MasterSpecification;

@@ -12,7 +12,7 @@ import {JsonStore} from '../store.ts';
 test('MCP HTTP mutations obey origin boundary and only selected server-side references reach a new approval-gated architecture',async()=>{
   const directory=await mkdtemp(join(tmpdir(),'forgeweb-mcp-http-'));
   const store=new JsonStore(directory);await store.initialize();
-  const workflow=new BuildWorkflow(store,0);
+  const workflow=new BuildWorkflow(store, 0, undefined, undefined, true);
   const reference={serverId:'schema',kind:'supabase' as const,data:'{"tables":[{"name":"tasks"}]}',readAt:new Date().toISOString()};
   class SelectedFixture extends McpConnections{override selectedReferences(){return [reference];}}
   const manager=new SelectedFixture({});

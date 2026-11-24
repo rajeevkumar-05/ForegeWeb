@@ -51,7 +51,7 @@ export type ProjectVersion = {
 };
 
 export type ProjectWorkspace = {
-  editingMode?:'ai'|'local-style';
+  editingMode?:'ai'|'local-style'|'crud';
   graphify?: {status:'ready'|'warning';message:string;nodes?:number;edges?:number;sourceHash:string};
   project: ProjectSummary;
   currentVersion?: ProjectVersion;

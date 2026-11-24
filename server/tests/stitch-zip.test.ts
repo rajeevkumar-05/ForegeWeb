@@ -45,7 +45,7 @@ test("ZIP HTTP import preserves approval, blocks cross-origin requests and bypas
   const store = new JsonStore(directory);
   await store.initialize();
   let stitchCalls = 0;
-  const workflow = new BuildWorkflow(store, 0, undefined, { async design() { stitchCalls++; throw new Error('Must not call Stitch for an imported design'); } });
+  const workflow = new BuildWorkflow(store, 0, undefined, { async design() { stitchCalls++; throw new Error('Must not call Stitch for an imported design'); } }, true);
   const server = createForgeWebServer(workflow);
   await new Promise<void>((resolve) => server.listen(0,'127.0.0.1',resolve));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;

@@ -15,7 +15,7 @@ async function wait(workflow:BuildWorkflow,id:string,status:string){for(let i=0;
 test('failed builds retain source in SQLite, expose it without creating an exportable version, and resume manually',async()=>{
  const directory=await mkdtemp(join(tmpdir(),'forgeweb-checkpoints-'));let store=new JsonStore(directory);await store.initialize();
  try{
-  const initial=new BuildWorkflow(store,0);const created=await initial.create('Build a freelancer project and task manager with persistent SQLite data.');
+  const initial=new BuildWorkflow(store, 0, undefined, undefined, true);const created=await initial.create('Build a freelancer project and task manager with persistent SQLite data.');
   const proposed=await wait(initial,created.id,'awaiting_confirmation');
   await store.mutate(state=>{state.specifications[proposed.specification!.id].generator={mode:'ai',provider:'openai',model:'mock',message:'Offline test'};});
   let calls=0;
@@ -44,7 +44,7 @@ test('checkpoint write failures stop provider failover before another request ca
 test('failed executed verification cannot create a ready AI version or discard generated files',async()=>{
  const directory=await mkdtemp(join(tmpdir(),'forgeweb-release-gate-'));const store=new JsonStore(directory);await store.initialize();
  try{
-  const initial=new BuildWorkflow(store,0);const created=await initial.create('Build a notes application with SQLite storage and CRUD.');const proposal=await wait(initial,created.id,'awaiting_confirmation');
+  const initial=new BuildWorkflow(store, 0, undefined, undefined, true);const created=await initial.create('Build a notes application with SQLite storage.');const proposal=await wait(initial,created.id,'awaiting_confirmation');
   await store.mutate(state=>{state.specifications[proposal.specification!.id].generator={mode:'ai',provider:'openai',model:'offline',message:'Fixture only'};});
   const provider:ApplicationGenerationProvider={id:'openai',mode:'ai',model:'offline',async plan(){throw Error('Unexpected paid call');},async generate(spec){return generateDeterministicFiles(spec);}};
   const workflow=new BuildWorkflow(store,0,provider);let executions=0;workflow.workspace.setCompiler(async()=>{executions++;return {id:'fixture-verification',name:'Isolated frontend and backend verification',status:'failed',evidence:'Business endpoint /api/notes returned 503'};});

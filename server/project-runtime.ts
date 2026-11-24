@@ -8,6 +8,8 @@ import {sourceValidation,versionSourceHash} from './version-validation.ts';
 import {backendVerification} from './generation/backend-verification.ts';
 import {schemaWorkflowVerification} from './generation/schema-workflow-verification.ts';
 import type {ProjectWorkspaceService} from './project-workspace.ts';
+import { crudSourceCheck, openCrud } from './crud/application.ts';
+import { openRecords, startServer, stopServer } from '../resources/crud/engine.mjs';
 
 export type RuntimeStatus={status:'stopped'|'starting'|'running'|'failed';hasSession?:boolean;cleanupPending?:boolean;versionId?:string;validationStatus?:string;eligible?:boolean;url?:string;frontendHealthy:boolean;backendHealthy:boolean;message:string;databaseLocation?:string};
 type Session={status:RuntimeStatus;resourcesPresent?:boolean;network:string;frontend:string;backend:string;proxy:string;volume:string;timer?:ReturnType<typeof setTimeout>};
@@ -45,6 +47,7 @@ export function redactStorage(value:unknown,depth=0):unknown{
 
 // Only reviewed Docker commands run on the host. Generated code runs in containers.
 export class ProjectRuntime {
+  private crudSessions = new Map<string, { app: ReturnType<typeof openCrud>; status: RuntimeStatus }>();
   private sessions=new Map<string,Session>();
   private busy=new Set<string>();
   private prefix=`forgeweb-live-${randomUUID().slice(0,8)}`;
@@ -58,6 +61,13 @@ export class ProjectRuntime {
     return new Promise((resolveResult,reject)=>execFile('docker',args,{windowsHide:true,timeout,maxBuffer:512*1024},(error,stdout,stderr)=>error?reject(new ApiError(503,'RUNTIME_DOCKER_FAILED',`Docker ${args[0]} failed or timed out. ${String(redactStorage(stderr+'\n'+stdout)).slice(0,1500)}`)):resolveResult((stdout+(args[0]==='logs'?stderr:'')).trim())));
   }
   private volume(projectId:string){return `forgeweb-app-${digest(projectId).slice(7,31)}-data`;}
+  private crudDatabase(projectId: string) { return resolve(this.dataDirectory, 'crud-data', digest(projectId).slice(7) + '.sqlite'); }
+  private async stopCrud(projectId: string) {
+    const session = this.crudSessions.get(projectId);
+    if (!session) return;
+    this.crudSessions.delete(projectId);
+    try { await stopServer(session.app.server); } finally { session.app.db.close(); }
+  }
   private async ownerEnvironment(projectId:string):Promise<string[]>{
     if(!/^[\w-]+$/.test(projectId))throw new ApiError(400,'PROJECT_ID_INVALID','Invalid project identifier.');
     const path=resolve(this.dataDirectory,'runtime-env',projectId+'.env');let content:string;
@@ -126,6 +136,18 @@ export class ProjectRuntime {
   }
   async status(projectId:string):Promise<RuntimeStatus>{
     const workspace=this.workspace.get(projectId);
+    if (workspace.specification?.crud) {
+      const session = this.crudSessions.get(projectId);
+      if (!session) return { status:'stopped', ...this.eligibility(projectId), frontendHealthy:false, backendHealthy:false, databaseLocation:this.crudDatabase(projectId), message:'Start the local CRUD app to use its forms and SQLite database.' };
+      if (workspace.currentVersion?.id !== session.status.versionId) return {...session.status, status:'failed', url:undefined, message:'Stop the previous version before restarting.'};
+      try {
+        if (!session.app.server.listening) throw Error('Preview stopped.');
+        session.app.db.prepare('SELECT 1 FROM records LIMIT 1').get();
+        return {...session.status};
+      } catch {
+        return {...session.status, status:'failed', url:undefined, frontendHealthy:false, backendHealthy:false, message:'The local app or database is unavailable. Stop and restart the preview.'};
+      }
+    }
     const session=this.sessions.get(projectId);
     if(!session)return {status:'stopped',...this.eligibility(projectId),frontendHealthy:false,backendHealthy:false,message:this.eligibility(projectId).eligible?'Static preview only. Start live preview to run React and FastAPI.':'This version needs validation before live preview can start.',databaseLocation:`Docker volume ${this.volume(projectId)} → /data/application.sqlite3`};
     if(session.status.status!=='running')return {...session.status,hasSession:session.resourcesPresent!==false};
@@ -140,7 +162,7 @@ export class ProjectRuntime {
   }
   async start(projectId:string,expectedVersionId?:string):Promise<RuntimeStatus>{
     if(this.busy.has(projectId))throw new ApiError(409,'RUNTIME_BUSY','Runtime operation already in progress.');
-    const otherProjects=new Set([...this.busy,...[...this.sessions].filter(([,session])=>session.resourcesPresent!==false).map(([id])=>id)]);otherProjects.delete(projectId);
+    const otherProjects=new Set([...this.busy,...this.crudSessions.keys(),...[...this.sessions].filter(([,session])=>session.resourcesPresent!==false).map(([id])=>id)]);otherProjects.delete(projectId);
     if(otherProjects.size>=2)throw new ApiError(409,'RUNTIME_LIMIT','Stop another preview before starting a third one.');
     this.busy.add(projectId);
     let attempted=false;
@@ -148,6 +170,22 @@ export class ProjectRuntime {
       const workspace=this.workspace.get(projectId);
       if(expectedVersionId&&workspace.currentVersion?.id!==expectedVersionId)throw new ApiError(409,'VERSION_CHANGED','The selected version changed. Refresh before starting.');
       if(!workspace.currentVersion||workspace.currentVersion.validationStatus!=='passed')throw new ApiError(409,'RUNTIME_VERSION_REQUIRED','Select a validated project version first.');
+      if (workspace.specification?.crud) {
+        if (workspace.currentVersion.validationSourceHash !== versionSourceHash(workspace.files) || crudSourceCheck(workspace.specification, workspace.files).status !== 'passed') throw new ApiError(409, 'CRUD_SOURCE_CHANGED', 'Revalidate the selected CRUD source before starting.');
+        const running = this.crudSessions.get(projectId);
+        if (running?.status.versionId === workspace.currentVersion.id) return this.status(projectId);
+        await this.stopCrud(projectId);
+        const path = this.crudDatabase(projectId);
+        await mkdir(dirname(path), {recursive:true});
+        const app = openCrud(workspace.specification.crud, path);
+        try {
+          const url = await startServer(app.server);
+          const [ui, health] = await Promise.all([fetch(url), fetch(url + '/health')]);
+          if (!ui.ok || !health.ok || (await health.json() as {status:string}).status !== 'ok') throw Error('Local CRUD startup health check failed.');
+          const status: RuntimeStatus = {status:'running',hasSession:true,eligible:true,versionId:workspace.currentVersion.id,url,frontendHealthy:true,backendHealthy:true,message:'Local CRUD app and SQLite are running until you stop the preview or close ForgeWeb. Records persist.',databaseLocation:path};
+          this.crudSessions.set(projectId, {app, status}); return status;
+        } catch (error) { if (app.server.listening) await stopServer(app.server); app.db.close(); throw error; }
+      }
       if(!this.eligibility(projectId).eligible)throw new ApiError(409,'RUNTIME_VERSION_REQUIRED','Source changed after validation. Validate this version again.');
       const sourceHash=versionSourceHash(workspace.files);
       const checks=await sourceValidation(workspace.files);
@@ -198,6 +236,7 @@ export class ProjectRuntime {
     finally{this.busy.delete(projectId);}
   }
   private async stopContainers(projectId:string){
+    if (this.crudSessions.has(projectId)) return this.stopCrud(projectId);
     const session=this.sessions.get(projectId);if(!session)return;if(session.resourcesPresent===false){this.sessions.delete(projectId);return;}
     const failures:string[]=[];const remove=async(args:string[])=>{try{await this.docker(args,5000);}catch(error){if(!/No such (?:container|object|network)|network .+ not found/i.test(error instanceof Error?error.message:''))failures.push(args.at(-1)??'resource');}};
     await Promise.all([session.proxy,session.frontend,session.backend].map(name=>remove(['rm','-f',name])));await remove(['network','rm',session.network]);
@@ -205,10 +244,20 @@ export class ProjectRuntime {
     if(session.timer)clearTimeout(session.timer);this.sessions.delete(projectId);
   }
   async stop(projectId:string){this.workspace.get(projectId);if(this.busy.has(projectId))throw new ApiError(409,'RUNTIME_BUSY','Runtime operation in progress.');this.busy.add(projectId);try{await this.stopContainers(projectId);return this.status(projectId);}finally{this.busy.delete(projectId);}}
-  async shutdown(){const results=await Promise.allSettled([...this.sessions.keys()].map(id=>this.stopContainers(id)));await Promise.all([...this.partials.values()].map(value=>rm(value.root,{recursive:true,force:true}).catch(()=>{})));this.partials.clear();if(results.some(result=>result.status==='rejected'))throw new Error('Some runtime containers could not be removed; inspect Docker and retry cleanup.');}
+  async shutdown(){const results=await Promise.allSettled([...this.sessions.keys(),...this.crudSessions.keys()].map(id=>this.stopContainers(id)));await Promise.all([...this.partials.values()].map(value=>rm(value.root,{recursive:true,force:true}).catch(()=>{})));this.partials.clear();if(results.some(result=>result.status==='rejected'))throw new Error('Some runtime resources could not be removed. Retry cleanup.');}
   async storage(projectId:string,collection='',offset=0){
-    this.workspace.get(projectId);
+    const workspace = this.workspace.get(projectId);
     if(!/^[\w -]{0,80}$/.test(collection)||!Number.isSafeInteger(offset)||offset<0||offset>100000)throw new ApiError(400,'STORAGE_QUERY_INVALID','Invalid collection or page offset.');
+    if (workspace.specification?.crud) {
+      const location = this.crudDatabase(projectId);
+      await mkdir(dirname(location), {recursive:true});
+      const db = openRecords(location);
+      try {
+        const collections = workspace.specification.crud.resources.map(r => ({ name:r.key, count:Number(db.prepare('SELECT COUNT(*) AS n FROM records WHERE collection=?').get(r.key)?.n) }));
+        const rows = db.prepare('SELECT payload FROM records WHERE collection=? ORDER BY rowid DESC LIMIT 25 OFFSET ?').all(collection, offset).map(row => redactStorage(JSON.parse(String(row.payload))));
+        return {engine:'SQLite',location,collections,rows,total:collections.find(r=>r.name===collection)?.count??0,offset,limit:25};
+      } finally { db.close(); }
+    }
     const volume=this.volume(projectId);
     await this.docker(['version','--format','{{.Server.Version}}']);
     try{await this.docker(['volume','inspect',volume,'--format','{{.Name}}']);}catch{return {engine:'SQLite',location:`Docker volume ${volume} → /data/application.sqlite3`,collections:[],rows:[],total:0,message:'No runtime database exists yet. Start a live preview and save a record.'};}

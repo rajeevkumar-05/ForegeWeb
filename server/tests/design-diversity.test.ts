@@ -35,7 +35,9 @@ async function fixture() {
   const store = new JsonStore(directory);
   await store.initialize();
   const fake = provider();
-  return { directory, store, fake, workflow: new BuildWorkflow(store, 0, fake) };
+  const workflow = new BuildWorkflow(store, 0, fake);
+  workflow.workspace.setCompiler(async () => ({ id:'fixture', name:'Mock compiler', status:'passed', evidence:'Design diversity fixture' }));
+  return { directory, store, fake, workflow };
 }
 async function wait(workflow: BuildWorkflow, id: string, states: string[]) {
   for (let attempt = 0; attempt < 300; attempt++) {

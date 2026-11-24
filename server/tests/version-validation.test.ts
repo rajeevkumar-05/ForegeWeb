@@ -9,7 +9,7 @@ import {ProjectRuntime} from '../project-runtime.ts';
 import {versionSourceHash} from '../version-validation.ts';
 import {createForgeWebServer} from '../app.ts';
 
-async function fixture(){const dir=await mkdtemp(join(tmpdir(),'forgeweb-validation-'));const store=new JsonStore(dir);await store.initialize();const workflow=new BuildWorkflow(store,0);const build=await workflow.create('Build a client portal for projects and files.');
+async function fixture(){const dir=await mkdtemp(join(tmpdir(),'forgeweb-validation-'));const store=new JsonStore(dir);await store.initialize();const workflow=new BuildWorkflow(store, 0, undefined, undefined, true);const build=await workflow.create('Build a client portal for projects and files.');
   const wait=async(status:string)=>{for(let i=0;i<2000;i++){const b=workflow.get(build.id);if(b.status===status)return;if(b.status==='failed')throw new Error(b.error?.message);await new Promise(r=>setTimeout(r,5));}throw new Error('Timeout');};await wait('awaiting_confirmation');await workflow.confirm(build.id);await wait('completed');const workspace=workflow.workspace.get(build.projectId);return {dir,store,workflow,projectId:build.projectId,versionId:workspace.currentVersion!.id};}
 const passed=()=>Promise.resolve({id:'compile',name:'Isolated React typecheck and build',status:'passed' as const,evidence:'Mock compiler only'});
 test('pending versions require real validation results; passing source and compiler checks persist with source hash',async()=>{

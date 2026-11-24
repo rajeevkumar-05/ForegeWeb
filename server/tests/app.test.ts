@@ -13,7 +13,7 @@ test("HTTP boundaries expose proposal, confirmation, and completed build phases"
   const directory = await mkdtemp(join(tmpdir(), "forgeweb-http-test-"));
   const store = new JsonStore(directory);
   await store.initialize();
-  const workflow = new BuildWorkflow(store, 0);
+  const workflow = new BuildWorkflow(store, 0, undefined, undefined, true);
   const server = createForgeWebServer(workflow);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address() as AddressInfo;

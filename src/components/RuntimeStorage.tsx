@@ -18,7 +18,7 @@ export function LiveRuntime({projectId,versionId,validationStatus,checks=[],onVa
   }
   const healthy=state?.status==='running'&&state.frontendHealthy&&state.backendHealthy;
   const eligible=validationStatus==='passed'&&state?.eligible!==false;
-  const label=healthy?'Live Vite server · FastAPI healthy':busy?'Validating / starting / checking…':state?.status==='failed'?'Live preview failed':state?.status==='starting'?'Live preview starting':!eligible?'Validation required · static preview only':'Static preview · backend not running';
+  const label=healthy?'Live preview · backend healthy':busy?'Validating / starting / checking…':state?.status==='failed'?'Live preview failed':state?.status==='starting'?'Live preview starting':!eligible?'Validation required · static preview only':'Static preview · backend not running';
   return <section className="runtime-tools" aria-label="Live project runtime">
     <div className="runtime-controls"><strong>{label}</strong>
     {!healthy&&<button type="button" className="button workspace-button" disabled={busy||!versionId} onClick={()=>void validate()}>{eligible?'Revalidate this version':'Validate this version'}</button>}

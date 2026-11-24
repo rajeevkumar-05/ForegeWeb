@@ -36,9 +36,9 @@ import { BuildWaitTimeoutError, confirmBuild, createBuild, waitForBuild, type Bu
 const floatingLinesGradient = ["#50c7f0", "#000000", "#0ac0e0"];
 
 const quickPrompts = [
-  "Client portal",
-  "Inventory OS",
-  "Team scheduler",
+  { label: "Inventory", prompt: "Build an inventory CRUD website with item name, SKU (unique), quantity (integer, min 0) and price (number, min 0)." },
+  { label: "Student records", prompt: "Build a student management system with student name, USN (unique), branch and fees (number, min 0)." },
+  { label: "Library", prompt: "Build a library CRUD website. Books: title, ISBN (unique), author; Members: name, email (unique), joining date." },
 ];
 
 const buildStages = [
@@ -82,7 +82,7 @@ function BrandMark() {
 }
 
 function Hero() {
-  const [prompt, setPrompt] = useState("Build a secure client portal for a creative agency with projects, invoices, files, and role-based access.");
+  const [prompt, setPrompt] = useState(quickPrompts[0].prompt);
   const [stage, setStage] = useState(-1);
   const [running, setRunning] = useState(false);
   const [build, setBuild] = useState<BuildResponse | null>(null);
@@ -258,18 +258,18 @@ function Hero() {
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
                 className="hero-chat-input"
-                placeholder="Describe the product you want to build…"
+                placeholder="Build an inventory CRUD website with name, SKU (unique), quantity and price…"
               />
               <div className="hero-chat-actions">
                 <div className="flex flex-wrap gap-1.5">
                   {quickPrompts.map((item) => (
                     <button
                       type="button"
-                      key={item}
-                      onClick={() => setPrompt(`Build a secure ${item.toLowerCase()} with role-based access, tests, and a polished responsive interface.`)}
+                      key={item.label}
+                      onClick={() => setPrompt(item.prompt)}
                       className="hero-chat-chip"
                     >
-                      {item}
+                      {item.label}
                     </button>
                   ))}
                 </div>

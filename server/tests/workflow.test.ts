@@ -15,7 +15,7 @@ async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "forgeweb-test-"));
   const store = new JsonStore(directory);
   await store.initialize();
-  return { directory, store, workflow: new BuildWorkflow(store, 0) };
+  return { directory, store, workflow: new BuildWorkflow(store, 0, undefined, undefined, true) };
 }
 
 async function waitForBuild(workflow: BuildWorkflow, buildId: string, expected: string[]) {
@@ -219,6 +219,7 @@ test("a configured model provider drives prompt-specific planning and modular fi
     },
   };
   const workflow = new BuildWorkflow(store, 0, provider);
+  workflow.workspace.setCompiler(async () => ({ id:'fixture', name:'Mock compiler', status:'passed', evidence:'Provider orchestration fixture' }));
   try {
     const created = await workflow.create("Build a patient appointment booking and care coordination website for a neighborhood clinic.");
     const proposal = await waitForBuild(workflow, created.id, ["awaiting_confirmation", "failed"]);
@@ -450,7 +451,7 @@ test("project workspace supports real preview, scoped versions, restore, persist
 
     const reloadedStore = new JsonStore(directory);
     await reloadedStore.initialize();
-    const reloadedWorkflow = new BuildWorkflow(reloadedStore, 0);
+    const reloadedWorkflow = new BuildWorkflow(reloadedStore, 0, undefined, undefined, true);
     assert.equal(reloadedWorkflow.workspace.get(build.projectId).currentVersion?.id, currentBeforeFailure);
 
     const summary = await reloadedWorkflow.workspace.validateExport(build.projectId);

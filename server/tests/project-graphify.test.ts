@@ -50,7 +50,7 @@ test('missing CLI fails safely and edits retain bounded direct source context',a
 });
 
 test('generation, opening an older version, edit and restore all request local indexing',async()=>{
-  const directory=await mkdtemp(join(tmpdir(),'forgeweb-graph-workflow-'));const store=new JsonStore(directory);await store.initialize();const workflow=new BuildWorkflow(store,0);const indexed:string[]=[];
+  const directory=await mkdtemp(join(tmpdir(),'forgeweb-graph-workflow-'));const store=new JsonStore(directory);await store.initialize();const workflow=new BuildWorkflow(store, 0, undefined, undefined, true);const indexed:string[]=[];
   workflow.workspace.graphify.ensure=async(_project,version,files)=>{indexed.push(version);return {status:'ready',message:'QA graph',sourceHash:graphifyHash(files),nodes:0,edges:0,nodesData:[],linksData:[]};};
   try{
     const created=await workflow.create('Build a client portal with projects and files.');

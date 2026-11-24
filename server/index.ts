@@ -20,7 +20,7 @@ const server = createForgeWebServer(workflow,undefined,runtime);
 server.listen(port, "127.0.0.1", () => {
   console.log(`ForgeWeb control plane listening on http://127.0.0.1:${port}`);
   console.log(`Persistent data: ${dataDirectory}`);
-  console.log(provider ? `Generation provider: ${provider.id} (${provider.model})` : "Generation provider: deterministic local fallback");
+  console.log(provider ? `Generation provider: ${provider.id} (${provider.model})` : "Generation provider: built-in CRUD builder");
 });
 
 const shutdown = () => server.close(()=>{void runtime.shutdown().then(()=>process.exit(0),()=>{console.error('Runtime cleanup incomplete. Inspect Docker containers before restarting.');process.exit(1);});});

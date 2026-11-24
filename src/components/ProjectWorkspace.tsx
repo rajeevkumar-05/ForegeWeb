@@ -261,7 +261,7 @@ export default function ProjectWorkspace({ projectId, initialFilePaths, validati
             </div>
           )}
           <div className="preview-actions">
-            <button type="button" className="button button-acid" disabled={loading} onClick={() => setEditOpen(true)}><PencilLine /> {workspace?.editingMode==='ai'?'Edit with AI':'Edit styling'}</button>
+            {workspace?.editingMode!=='crud' && <button type="button" className="button button-acid" disabled={loading} onClick={() => setEditOpen(true)}><PencilLine /> {workspace?.editingMode==='ai'?'Edit with AI':'Edit styling'}</button>}
             <button type="button" className="button workspace-button" onClick={() => { setTab("preview"); document.querySelector(".workspace-preview")?.scrollIntoView({ behavior: "smooth", block: "start" }); }}><Expand /> Preview project</button>
           </div>
         </div>

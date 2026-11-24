@@ -103,7 +103,7 @@ test("Stitch runs only after approval, pauses on failure, and retries without ch
     assert.equal(spec.status, "approved"); calls++;
     if (fail) throw new ApiError(503, "STITCH_UNAVAILABLE", "Stitch unavailable; retry");
     return design;
-  } });
+  } }, true);
   const wait = async (id: string, status: string) => {
     for (let i = 0; i < 2000; i++) {
       const build = workflow.get(id);

@@ -20,6 +20,8 @@ import type {
 import {GENERATED_VITE_VERSION,GENERATED_REACT_PLUGIN_VERSION} from './generation/frontend-toolchain.ts';
 import { ApiError, assertPrompt, delay, digest, id, now, safePath, slugify } from "./lib.ts";
 import { buildGeneratedFrontend, hasGeneratedFrontendMarker } from "./generated-frontend.ts";
+import { applyCrudPlan, parseCrudPrompt } from './crud/plan.ts';
+import { crudFiles, verifyCrudFiles } from './crud/application.ts';
 import { detectProductKind, inferDomainEntities, inferProductName } from "./product-intent.ts";
 import { AGENT_POLICY, createTasks, enforceImplementationTask } from "./policy.ts";
 import { ProjectWorkspaceService } from "./project-workspace.ts";
@@ -417,21 +419,21 @@ function buildGraph(project: Project, build: Build, specification: MasterSpecifi
 }
 
 export class BuildWorkflow {
-  /** When true, a build whose AI providers all fail is completed by the local generator. */
-  localCompletion = false;
   private checkpointGraphs=new Map<string,GraphifyStatus>();
   private running = new Set<string>();
   private readonly store: JsonStore;
   private readonly stageDelayMs: number;
   private readonly generationProvider?: ApplicationGenerationProvider;
   private readonly stitchDesigner?: StitchDesigner;
+  private readonly legacyTemplates: boolean;
   readonly workspace: ProjectWorkspaceService;
 
-  constructor(store: JsonStore, stageDelayMs = 180, generationProvider?: ApplicationGenerationProvider, stitchDesigner?: StitchDesigner) {
+  constructor(store: JsonStore, stageDelayMs = 180, generationProvider?: ApplicationGenerationProvider, stitchDesigner?: StitchDesigner, legacyTemplates = false) {
     this.store = store;
     this.stageDelayMs = stageDelayMs;
     this.generationProvider = generationProvider;
     this.stitchDesigner = stitchDesigner;
+    this.legacyTemplates = legacyTemplates;
     this.workspace = new ProjectWorkspaceService(store,generationProvider);
   }
 
@@ -535,7 +537,7 @@ export class BuildWorkflow {
   generationStatus(): { mode: "ai" | "gemini" | "deterministic"; provider: string; model: string; configured: boolean } {
     return this.generationProvider
       ? { mode: this.generationProvider.mode, provider: this.generationProvider.id, model: this.generationProvider.model, configured: true }
-      : { mode: "deterministic", provider: "forgeweb-local", model: "forgeweb-templates-v2", configured: false };
+      : { mode: "deterministic", provider: "forgeweb-local", model: "forgeweb-crud-v1", configured: false };
   }
 
   async prepare(buildId: string, prompt?: string, mcpReferences?:MasterSpecification['mcpReferences']): Promise<void> {
@@ -560,9 +562,15 @@ export class BuildWorkflow {
           .map((description) => description.slice(0, 1_000)),
       };
       let specification = fallbackSpecification;
-      if (this.generationProvider) {
+      const crud = parseCrudPrompt(sourcePrompt);
+      if (crud) {
+        if (references?.length) throw new ApiError(422, 'CRUD_REFERENCE_UNSUPPORTED', 'The local CRUD builder takes collection definitions in the prompt. Remove external references to continue.');
+        specification = applyCrudPlan(fallbackSpecification, crud);
+      } else if (this.generationProvider) {
         const providerPlan = await this.generationProvider.plan(sourcePrompt, fallbackSpecification);
         specification = applyProviderPlan(fallbackSpecification, providerPlan, this.generationProvider);
+      } else if (!this.legacyTemplates) {
+        throw new ApiError(422, 'CRUD_PROMPT_NEEDS_DETAIL', 'For a local CRUD website, name the collections and fields. Example: Build an inventory CRUD website. Items: name, SKU (unique), quantity (integer, min 0).');
       }
       await this.store.mutate((database) => {
         database.specifications[specification.id] = specification;
@@ -608,6 +616,7 @@ export class BuildWorkflow {
 
   async importStitchDesignZip(buildId: string, buffer: Buffer): Promise<BuildView> {
     const current = this.get(buildId);
+    if(current.specification?.crud) throw new ApiError(422, 'CRUD_DESIGN_UNSUPPORTED', 'The local CRUD builder uses its built-in record forms.');
     if (current.status !== "awaiting_confirmation" || !current.specification) throw new ApiError(409, "INVALID_BUILD_STATE", "Import a Stitch ZIP while this build is waiting for confirmation.");
     const design = await importStitchZip(buffer);
     await this.store.mutate((state) => {
@@ -699,7 +708,7 @@ export class BuildWorkflow {
         throw new ApiError(409, "SPECIFICATION_NOT_CONFIRMED", "Frontend and backend generation requires an approved specification.");
       }
       const database = this.store.read();
-      if (this.stitchDesigner && !specification.stitchDesign) {
+      if (this.stitchDesigner && !specification.crud && !specification.stitchDesign) {
         await this.stage(buildId, "generating", "Designing the approved product in Google Stitch before source generation.");
         const design = await this.stitchDesigner.design(specification, async (checkpoint) => {
           await this.store.mutate((state) => { state.specifications[specification!.id].stitchRequest = checkpoint; });
@@ -711,12 +720,13 @@ export class BuildWorkflow {
       const tasks = initial.taskIds.map((taskId) => database.tasks[taskId]).filter((task): task is AgentTask => Boolean(task));
       if (tasks.length === 0) throw new ApiError(500, "TASK_PLAN_INVALID", "Approved task plan is missing.");
 
-      await this.stage(buildId, "generating", specification.generator?.mode !== "deterministic"
+      await this.stage(buildId, "generating", specification.crud ? "Generating the approved record forms and persistent SQLite API." : specification.generator?.mode !== "deterministic"
         ? `${specification.generator?.provider ?? "AI"} is generating the approved React frontend and contract-matched Python backend.`
         : "Generating a secure prompt-specific application with the deterministic local fallback.");
       let files: GeneratedFile[];
-      if (this.generationProvider && specification.generator?.mode !== "deterministic") {
-       try {
+      if (specification.crud) {
+        files = crudFiles(specification);
+      } else if (this.generationProvider && specification.generator?.mode !== "deterministic") {
         let repaired = false;
         try {
           files = await this.generationProvider.generate(specification, async (detail) => { await this.stage(buildId, "generating", detail); }, async accepted => {
@@ -766,18 +776,11 @@ export class BuildWorkflow {
             throw new ApiError(422, "REPEATED_LAYOUT", "The model repeated an existing layout after a redesign attempt. No template was substituted. Please retry generation.");
           }
         }
-       } catch (aiError) {
-        // Opt-in (FORGEWEB_LOCAL_COMPLETION=true): when every AI provider fails,
-        // finish the approved specification with ForgeWeb's own local generator.
-        if (!this.localCompletion || (aiError instanceof ApiError && aiError.code === "CHECKPOINT_STALE")) throw aiError;
-        const reason = aiError instanceof Error ? aiError.message.slice(0, 200) : "unknown provider error";
-        await this.stage(buildId, "generating", `AI providers could not finish (${reason}). Completing the approved specification with ForgeWeb's local generator.`);
-        files = generateDeterministicFiles(specification);
-       }
       } else {
         if (specification.generator?.mode === "ai" || specification.generator?.mode === "gemini") {
           throw new ApiError(503, "PROVIDER_UNAVAILABLE", "The approved AI provider is unavailable. Restore the API configuration before generating.");
         }
+        if (!this.legacyTemplates) throw new ApiError(422, 'LEGACY_PROPOSAL', 'This is a legacy template proposal. Start a new CRUD project with the fields to store.');
         files = generateDeterministicFiles(specification);
       }
       const implementationTask = tasks.find((task) => task.role === "implementation");
@@ -804,14 +807,14 @@ export class BuildWorkflow {
       await this.completeStage(buildId);
 
       await this.stage(buildId, "validating", "Validating paths, security boundary, tests, provenance, and requirement coverage.");
-      const checks = validate(specification, files, findings);
-      const execution=specification.generator?.mode!=='deterministic'?await this.workspace.verifyGenerated(files):undefined;
-      if(execution)checks.push(execution);
-      if(execution?.status==='failed'){
+      const checks = specification.crud ? await verifyCrudFiles(specification, files) : validate(specification, files, findings);
+      const execution=specification.crud ? checks.at(-1) : specification.generator?.mode!=='deterministic'?await this.workspace.verifyGenerated(files):undefined;
+      if (specification.generator?.mode !== 'deterministic' && !execution) throw new ApiError(503, 'VALIDATOR_UNAVAILABLE', 'Full-stack verification is unavailable. Restore the runtime verifier and retry this build.');
+      if(execution && !specification.crud)checks.push(execution);
+      if(checks.some(check => check.status === 'failed')){
         await this.store.mutate(database=>{database.builds[buildId].validationChecks=checks;});
-        throw new ApiError(422,'FULL_STACK_VERIFICATION_FAILED',execution.evidence);
+        throw new ApiError(422,'FULL_STACK_VERIFICATION_FAILED',checks.find(check => check.status === 'failed')!.evidence);
       }
-      if (checks.some((check) => check.status === "failed")) throw new ApiError(422, "VALIDATION_FAILED", "One or more required validation checks failed.");
       await this.store.mutate((database) => {
         database.builds[buildId].validationChecks = checks;
         for (const taskId of database.builds[buildId].taskIds) if (database.tasks[taskId].role === "validator") database.tasks[taskId].status = "completed";
@@ -826,7 +829,7 @@ export class BuildWorkflow {
         const build = database.builds[buildId];
         build.status = "completed";
         build.currentStageIndex = stageIndexes.completed;
-        build.stageDetail = execution?`Source and isolated execution checks passed; browser workflows still require testing. ${graph.nodes.length} graph nodes synchronized.`:`Source generated; static checks passed. Runtime and browser workflows remain unverified. ${graph.nodes.length} graph nodes synchronized.`;
+        build.stageDetail = specification.crud ? execution!.evidence + ' Start live preview to use the app.' : execution?`Source and isolated execution checks passed; browser workflows still require testing. ${graph.nodes.length} graph nodes synchronized.`:`Source generated; static checks passed. Runtime and browser workflows remain unverified. ${graph.nodes.length} graph nodes synchronized.`;
         build.graphSnapshotId = graph.id;
         build.completedAt = now();
         build.updatedAt = now();

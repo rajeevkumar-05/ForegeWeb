@@ -17,6 +17,7 @@ import { dirname, join } from 'node:path';
 import {sourceValidation,versionSourceHash} from './version-validation.ts';
 import type {ApplicationGenerationProvider} from './providers/generation-provider.ts';
 import {applyEditPatch} from './generation/project-edit.ts';
+import { crudSourceCheck, verifyCrudFiles } from './crud/application.ts';
 
 type EditScope = "frontend" | "backend" | "database" | "fullstack";
 
@@ -32,7 +33,7 @@ function databaseInfo(specification?: MasterSpecification): GeneratedDatabaseInf
   return {
     engine: specification ? "SQLite" : "Not required",
     schemaSource: "Approved master specification",
-    tables: entities.map((entity) => ({
+    tables: specification?.crud?.resources.map(r => ({name:r.key,purpose:r.label + ' records.'})) ?? entities.map((entity) => ({
       name: entity.replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase() + "s",
       purpose: `${entity} records owned by the generated application.`,
     })),
@@ -245,7 +246,7 @@ export class ProjectWorkspaceService {
       .sort((left, right) => right.versionNumber - left.versionNumber);
     const currentVersion = project.currentVersionId ? database.versions[project.currentVersionId] : undefined;
     const files = currentVersion ? database.versionFiles[currentVersion.id] ?? [] : project.currentBuildId ? database.files[project.currentBuildId] ?? [] : [];
-    return { project, specification, currentVersion, versions, files, database: databaseInfo(specification),editingMode:this.editor?.edit?'ai':'local-style' };
+    return { project, specification, currentVersion, versions, files, database: databaseInfo(specification),editingMode:specification?.crud?'crud':this.editor?.edit?'ai':'local-style' };
   }
   setCompiler(compiler:(files:GeneratedFile[])=>Promise<ValidationCheck>){this.compiler=compiler;}
   async verifyGenerated(files:GeneratedFile[]):Promise<ValidationCheck|undefined>{return this.compiler?.(files);}
@@ -264,8 +265,8 @@ export class ProjectWorkspaceService {
     this.validationLocks.add(projectId);
     try{
       const files=structuredClone(workspace.files),sourceHash=versionSourceHash(files);
-      const checks=await sourceValidation(files);
-      if(checks.every(c=>c.status==='passed'))checks.push(await compile(files));
+      const checks=workspace.specification?.crud ? await verifyCrudFiles(workspace.specification, files) : await sourceValidation(files);
+      if(!workspace.specification?.crud && checks.every(c=>c.status==='passed'))checks.push(await compile(files));
       await this.store.mutate(database=>{
         const project=database.projects[projectId],version=database.versions[versionId];
         if(!project||project.currentVersionId!==versionId||!version||version.projectId!==projectId||versionSourceHash(database.versionFiles[versionId]??[])!==sourceHash)throw new ApiError(409,'VERSION_CHANGED','Version or source changed during validation. No result was applied.');
@@ -286,6 +287,7 @@ export class ProjectWorkspaceService {
 
   private async performProfessionalFrontendUpgrade(projectId: string): Promise<void> {
     const workspace = this.get(projectId);
+    if (workspace.specification?.crud) return;
     // An accepted edit is not a legacy template, even when the project started locally.
     if(workspace.currentVersion?.editPrompt&&workspace.currentVersion.validationSourceHash)return;
     // Reads must never replace a customer-specific AI design with a local template.
@@ -350,6 +352,7 @@ export class ProjectWorkspaceService {
     const prompt = assertPrompt(promptValue);
     const workspace = await this.getReady(projectId);
     if (!workspace.currentVersion) throw new ApiError(409, "PROJECT_NOT_GENERATED", "Generate the project before applying an edit.");
+    if (workspace.specification?.crud) throw new ApiError(422, 'CRUD_EDIT_UNSUPPORTED', 'Define changed collections in a new CRUD prompt. This version retains its approved data contract.');
     const originalHash=versionSourceHash(workspace.files),originalVersion=workspace.currentVersion.id;
     if(this.editor?.edit&&!this.compiler)throw new ApiError(503,'EDIT_VALIDATOR_UNAVAILABLE','The isolated compiler must be available before AI edits can run. No provider request was made.');
     const context=await this.graphify.context(projectId,workspace.currentVersion.id,workspace.files,prompt);
@@ -421,10 +424,12 @@ export class ProjectWorkspaceService {
     const workspace = structuredClone(this.get(projectId));
     if (!workspace.currentVersion) throw new ApiError(409, "PROJECT_NOT_GENERATED", "Generate the project before exporting it.");
     const version=workspace.currentVersion,hash=versionSourceHash(workspace.files),validationEvidence=digest(JSON.stringify([version.validationStatus,version.validationSourceHash,version.validationChecks]));
-    const checks = validateStoredProject(workspace.files);
+    const checks = workspace.specification?.crud ? [crudSourceCheck(workspace.specification, workspace.files)] : validateStoredProject(workspace.files);
     checks.push({id:id('check'),name:'Selected version validation',status:version.projectId===projectId&&version.validationStatus==='passed'&&version.validationChecks.length>0&&version.validationChecks.every(check=>check.status==='passed')&&(!version.validationSourceHash||version.validationSourceHash===hash)?'passed':'failed',evidence:'The selected version must have passed checks for its unchanged source. Pending, failed or stale versions cannot be exported.'});
-    checks.push(await validatePythonSyntax(workspace.files));
-    checks.push(await validatePythonModuleLinks(workspace.files));
+    if (!workspace.specification?.crud) {
+      checks.push(await validatePythonSyntax(workspace.files));
+      checks.push(await validatePythonModuleLinks(workspace.files));
+    }
     const passed = checks.every((check) => check.status === "passed");
     await this.store.mutate((database) => {
       const project = database.projects[projectId];

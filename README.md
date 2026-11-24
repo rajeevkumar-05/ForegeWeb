@@ -1,5 +1,24 @@
 # ForgeWeb
 
+## Build a local CRUD website
+
+Start ForgeWeb with `pnpm dev` using Node.js 22.13 or newer. Enter a project name and the fields to store. The built-in CRUD builder runs locally with Node and SQLite. Its generated websites have no package dependencies.
+
+- **One collection** — “Build an equipment tracker with asset tag (unique), description, purchase date, and price (number, min 0).”
+- **Several independent collections** — “Build a library CRUD website. Books: title, ISBN (unique), author; Members: name, email (unique), joining date.”
+
+Check the proposed fields, types, required flags, unique keys and numeric limits. Choose **Confirm requirements & generate**, then **Start live preview**. Every successful CRUD build exercises the HTTP API, invalid writes, search, update, deletion and persistence across a database reopen using disposable records. The live app starts with its own database. The Storage tab can inspect it.
+
+This path supports single-user record management. Use text, integer, number, email or date fields. Mark optional fields with `(optional)` and numeric bounds with e.g. `(integer, min 0, max 100)`. List independent collections separately. A prompt the builder cannot map requests clarification. For a changed schema, create a new project. The ZIP includes the website, server and acceptance suite. Run `npm test` or `npm start` in the extracted folder. Demo records stay in their local database.
+
+### Panel walkthrough
+
+1. On a fresh checkout, run `pnpm install --frozen-lockfile` before the presentation. In PowerShell, from the folder containing `package.json`, run `$env:FORGEWEB_GENERATION_MODE='deterministic'`, then `pnpm dev --strictPort`. Open `http://127.0.0.1:5173` and leave that terminal running.
+2. Choose **Student records** and **Forge this idea**. Show the four proposed fields, the unique USN and the minimum fee of zero. Select **Confirm requirements & generate** and wait for the HTTP test result.
+3. Select **Preview → Start live preview → Open live app**. Enter a fictional name, USN, branch and fees. Click **Add record**, search by USN, click **Edit**, change fees and select **Save changes**.
+4. Try adding a second record with the same USN. The server rejects it and keeps the original. Stop and restart the preview in ForgeWeb to show persistence. To demonstrate deletion, use a disposable row and choose **Delete → Confirm delete**.
+5. To demonstrate portability, select **Make ZIP**, then **Make ZIP** again in the export summary. Extract the ZIP, open a terminal in the extracted folder, run `npm test`, then `npm start`, and open the address it prints. This copy starts with its own empty database.
+
 ## ForgeWeb source graph (local 3D showcase)
 
 The home page's Graph section shows an actual Graphify code-only snapshot of ForgeWeb's `src`, `server`, `scripts` and selected build configuration—not customer application records. Drag to orbit, use zoom/reset or keyboard arrows, filter communities, search symbols and inspect extracted/inferred relationships. All indexed nodes and connections are rendered; only the text search list is limited to its first 40 matches. A searchable text inspector remains available without WebGL. Automatic rotation is off by default and disabled for reduced-motion preferences.
@@ -81,7 +100,7 @@ The confirmation boundary is enforced by the backend state machine. It is not me
 
 ## Requirements
 
-- Node.js 22 or newer
+- Node.js 22.13 or newer
 - pnpm 10 or newer
 - Google Chrome only when running the optional visual UI audit
 

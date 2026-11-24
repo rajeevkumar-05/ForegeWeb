@@ -33,7 +33,8 @@ export default function BuildProposal({ build, busy, onConfirm, onEditPrompt, on
   const architecture = specification.architecture;
   const awaiting = build.status === "awaiting_confirmation";
   const complete = build.status === "completed";
-  const generatorLabel = specification.generator?.mode === "deterministic"
+  const crud = specification.generator?.model === 'forgeweb-crud-v1';
+  const generatorLabel = crud ? 'Built-in CRUD builder' : specification.generator?.mode === "deterministic"
     ? "Local fallback"
     : specification.generator?.provider === "groq-openrouter"
       ? "Groq plan + OpenRouter build"
@@ -84,7 +85,7 @@ export default function BuildProposal({ build, busy, onConfirm, onEditPrompt, on
         </div>
       </div>
 
-      <div className="build-proposal-section">
+      {architecture.capabilities.length > 0 && <div className="build-proposal-section">
         <div className="build-proposal-title"><ExternalLink /> Customer-app capabilities</div>
         <p className="build-capability-note">These integrations are for the application your user generates—not decorations added to ForgeWeb itself.</p>
         <div className="build-capabilities">
@@ -95,7 +96,7 @@ export default function BuildProposal({ build, busy, onConfirm, onEditPrompt, on
             </a>
           ))}
         </div>
-      </div>
+      </div>}
 
       <details className="architecture-file" open>
         <summary><span><FileCode2 /> ARCHITECTURE.md</span><span>Generated proposal</span></summary>
@@ -107,7 +108,7 @@ export default function BuildProposal({ build, busy, onConfirm, onEditPrompt, on
           <div><strong>Ready for your decision</strong><p>Confirming freezes this specification, then starts frontend and backend generation.</p></div>
           <div className="build-confirmation-actions">
             <input ref={uploadInput} type="file" accept=".zip,application/zip" hidden aria-label="Stitch design ZIP" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importZip(file); }} />
-            <button type="button" className="button workspace-button" onClick={() => uploadInput.current?.click()} disabled={busy || importing}>{importing ? "Importing…" : "Import Stitch ZIP"}</button>
+            {!crud && <button type="button" className="button workspace-button" onClick={() => uploadInput.current?.click()} disabled={busy || importing}>{importing ? "Importing…" : "Import Stitch ZIP"}</button>}
             <button type="button" className="button workspace-button" onClick={onEditPrompt} disabled={busy || importing}><PencilLine /> Edit prompt</button>
             <button type="button" className="button button-acid" onClick={onConfirm} disabled={busy || importing}>{busy ? "Starting build…" : build.error?.code.startsWith("STITCH_") ? "Retry Stitch & generate" : "Confirm requirements & generate"}<ArrowRight /></button>
           </div>

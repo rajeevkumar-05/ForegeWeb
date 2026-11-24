@@ -21,7 +21,6 @@ function forgeWebDevApi(environment: Record<string, string>): Plugin {
         const store = new JsonStore(resolve(process.cwd(), environment.FORGEWEB_DATA_DIR ?? ".forgeweb-data"));
         await store.initialize();
         const workflow=new BuildWorkflow(store,180,createGenerationProviderFromEnv(environment),createStitchDesignerFromEnv(environment));
-        workflow.localCompletion=environment.FORGEWEB_LOCAL_COMPLETION==='true';
         projectRuntime=new ProjectRuntime(workflow.workspace,resolve(environment.FORGEWEB_DATA_DIR??'.forgeweb-data'),environment);
         return createForgeWebRequestHandler(workflow,new McpConnections(environment),projectRuntime);
       })();

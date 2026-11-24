@@ -16,7 +16,7 @@ test("product release acceptance audit (isolated data, no paid providers)", asyn
   const directory = await mkdtemp(join(tmpdir(), "forgeweb-release-audit-"));
   const store = new JsonStore(directory);
   await store.initialize();
-  const workflow = new BuildWorkflow(store, 0);
+  const workflow = new BuildWorkflow(store, 0, undefined, undefined, true);
   const server = createForgeWebServer(workflow);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -113,7 +113,7 @@ test("product release acceptance audit (isolated data, no paid providers)", asyn
       await store.mutate((db) => { db.builds[second.id].status = "generating"; });
       const reopened = new JsonStore(directory);
       await reopened.initialize();
-      const recovered = new BuildWorkflow(reopened, 0).get(second.id);
+      const recovered = new BuildWorkflow(reopened, 0, undefined, undefined, true).get(second.id);
       assert.notEqual(recovered.status, "generating", "Stale generation must become resumable or explicitly failed, not hang forever");
       assert.equal(recovered.error?.code, "BUILD_INTERRUPTED");
       assert.equal(reopened.read().builds[first.id].status, "completed");
